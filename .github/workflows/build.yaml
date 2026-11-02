@@ -52,7 +52,7 @@ jobs:
               cmake_args: "-DENABLE_API=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_C_FLAGS=-DDATUM_API_FOR_UMBREL=ON"
               extra_cflags: "-DDATUM_API_FOR_UMBREL"
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout code
