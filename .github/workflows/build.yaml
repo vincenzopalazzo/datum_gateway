@@ -58,6 +58,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Keep mmap randomization within what ASan supports
+        if: "!startsWith(matrix.os, 'freebsd')"
+        # The runner's kernel randomizes mmap with up to 32 bits; the ASan
+        # runtimes of the older compilers in this matrix then crash at startup
+        # now and then (AddressSanitizer:DEADLYSIGNAL), failing a random job.
+        run: |
+          sysctl vm.mmap_rnd_bits
+          sudo sysctl -w vm.mmap_rnd_bits=28
+
       - name: Build inside Docker
         if: "!startsWith(matrix.os, 'freebsd')"
         id: docker-build
