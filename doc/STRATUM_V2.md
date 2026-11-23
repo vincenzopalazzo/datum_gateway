@@ -44,6 +44,14 @@ source in that case:
         -DSECP256K1_BUILD_BENCHMARK=OFF
     cmake --build secp256k1/build && sudo cmake --install secp256k1/build
 
+To see what a build directory is configured for without building
+anything, run its `preview` target (`make preview` with the default
+generator). It prints the protocol layer, Rust or C, with its toolchain
+(cargo and rustc, or the libsecp256k1 version), and the C compiler,
+standard and flags:
+
+    cmake --build build --target preview
+
 Both layers produce the same bytes for every message and accept each
 other's handshakes. The SRI layer checks shares with `channels_sv2`'s own
 rules, which differ from the C core's in a few details, such as the error
