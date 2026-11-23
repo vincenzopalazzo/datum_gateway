@@ -101,7 +101,7 @@ jobs:
               ;;
             alpine:*)
               INSTALL_CMD="apk add --no-cache"
-              PACKAGES="git build-base cmake argp-standalone curl-dev jansson-dev libsodium-dev compiler-rt curl"
+              PACKAGES="git build-base cmake argp-standalone curl-dev jansson-dev libsodium-dev compiler-rt cargo"
               PACKAGES_API="libmicrohttpd-dev"
 
               # musl only supports ASan with clang

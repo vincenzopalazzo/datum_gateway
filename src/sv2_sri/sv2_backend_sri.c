@@ -328,7 +328,8 @@ int sv2_noise_read_frame(T_SV2_NOISE *n, const unsigned char *in, uint32_t in_le
 
 #define SAME_LAYOUT(C, S) _Static_assert(sizeof(C) == sizeof(S) && _Alignof(C) == _Alignof(S), #C " and " #S " are laid out differently")
 SAME_LAYOUT(T_SV2_BYTES, Sv2SriBytes);
-_Static_assert(offsetof(T_SV2_BYTES, data) == offsetof(Sv2SriBytes, data) && offsetof(T_SV2_BYTES, len) == offsetof(Sv2SriBytes, len), "byte views differ");
+_Static_assert(offsetof(T_SV2_BYTES, data) == offsetof(Sv2SriBytes, data), "byte views differ");
+_Static_assert(offsetof(T_SV2_BYTES, len) == offsetof(Sv2SriBytes, len), "byte views differ");
 SAME_LAYOUT(T_SV2_MSG_SETUP_CONNECTION, Sv2SriSetupConnection);
 SAME_LAYOUT(T_SV2_MSG_SETUP_CONNECTION_SUCCESS, Sv2SriSetupConnectionSuccess);
 SAME_LAYOUT(T_SV2_MSG_SETUP_CONNECTION_ERROR, Sv2SriSetupConnectionError);
