@@ -11,9 +11,16 @@ RUN apt-get update && apt-get install -y \
     libsodium-dev \
     libcurl4-openssl-dev \
     git \
+    curl \
+    ca-certificates \
     --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Rust, for the Stratum V2 protocol layer in external/sri-c-ffi
+# (doc/STRATUM_V2.md); Debian bookworm's is older than the 1.85 it needs
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /build
 
