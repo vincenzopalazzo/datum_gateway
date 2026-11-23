@@ -158,7 +158,8 @@ void *datum_stratum_v1_socket_server(void *arg) {
 	app->closed_client_func = datum_stratum_v1_socket_thread_client_closed;
 	app->new_client_func = datum_stratum_v1_socket_thread_client_new;
 	
-	// set listen port
+	// set listen address and port
+	snprintf(app->listen_addr, sizeof(app->listen_addr), "%s", datum_config.stratum_v1_listen_addr);
 	app->listen_port = datum_config.stratum_v1_listen_port;
 	
 	// setup limits
@@ -274,7 +275,9 @@ void *datum_stratum_v1_socket_server(void *arg) {
 		pthread_rwlock_wrlock(&stratum_global_latest_empty_stat);
 		if (!stratum_latest_empty_ready_for_full) {
 			// we're still on an empty wait-for-full
-			if (stratum_latest_empty_complete_count >= app->datum_active_threads) {
+			// the Stratum V2 server's threads blast empty work too and are
+			// waited for the same way
+			if (stratum_latest_empty_complete_count >= app->datum_active_threads + datum_sv2_active_threads()) {
 				// we are done!
 				stratum_latest_empty_ready_for_full = true;
 				DLOG_INFO("Empty work send completed. Sent to %llu clients across %llu threads", (unsigned long long)stratum_latest_empty_sent_count, (unsigned long long)stratum_latest_empty_complete_count);
@@ -863,8 +866,7 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 
 #define STAT_CYCLE_MS 60000
 
-void stratum_update_miner_stats_accepted(T_DATUM_CLIENT_DATA *c, uint64_t diff_accepted) {
-	T_DATUM_MINER_DATA * const m = c->app_client_data;
+void stratum_update_miner_stats_accepted(T_DATUM_MINER_DATA *m, uint64_t diff_accepted) {
 	
 	m->stats.diff_accepted[m->stats.active_index?1:0] += diff_accepted;
 	m->stats.last_share_tsms = m->sdata->loop_tsms;
@@ -1361,7 +1363,7 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj
 	m->share_count_since_snap++;
 	m->share_diff_since_snap += job_diff;
 	
-	stratum_update_miner_stats_accepted(c, job_diff);
+	stratum_update_miner_stats_accepted(c->app_client_data, job_diff);
 	stratum_update_vardiff(c,false);
 	
 	return 0;

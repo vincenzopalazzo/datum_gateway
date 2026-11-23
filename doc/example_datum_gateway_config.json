@@ -8,6 +8,10 @@
 	"stratum": {
 		"listen_port": 23334
 	},
+	"stratum_v2": {
+		"listen_port": 23335,
+		"authority_key_file": "datum_sv2_authority.key"
+	},
 	"mining": {
 		"pool_address": "put your own Bitcoin invoice address here",
 		"coinbase_tag_primary": "DATUM Gateway",

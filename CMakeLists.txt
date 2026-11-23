@@ -14,6 +14,8 @@ else()
 endif()
 
 option(ENABLE_API "Build API support." ON)
+set(DATUM_SV2_BACKEND "sri" CACHE STRING "Stratum V2 protocol layer: sri (SRI's crates through external/sri-c-ffi, needs cargo) or c (the C core in src/sv2, needs libsecp256k1 >= 0.4)")
+set_property(CACHE DATUM_SV2_BACKEND PROPERTY STRINGS sri c)
 
 include(GNUInstallDirs)
 
@@ -33,6 +35,8 @@ add_executable(datum_gateway
 	src/datum_stratum_tests.c
 	src/datum_stratum_dupes_tests.c
 	src/datum_submitblock.c
+	src/datum_sv2.c
+	src/datum_sv2_tests.c
 	src/datum_utils.c
 	src/datum_utils_tests.c
 	src/thirdparty_base58.c
@@ -150,6 +154,99 @@ target_compile_options(datum_gateway
 	${SODIUM_CFLAGS} ${SODIUM_CFLAGS_OTHER}
 )
 
+# Stratum V2: src/datum_sv2.c runs on one of two protocol layers, picked
+# with -DDATUM_SV2_BACKEND (see doc/STRATUM_V2.md).
+#   sri  SRI's Rust crates behind the C API in external/sri-c-ffi, which
+#        cargo builds here, or an installed libsv2_sri that pkg-config
+#        finds as sv2_sri.
+#   c    the C core in src/sv2, on libsodium and libsecp256k1 >= 0.4
+#        (ElligatorSwift arrived in 0.4.0).
+if(DATUM_SV2_BACKEND STREQUAL "c")
+	pkg_check_modules(SECP256K1 REQUIRED libsecp256k1>=0.4.0)
+	target_sources(datum_gateway PRIVATE
+		src/sv2/datum_sv2_channel.c
+		src/sv2/sv2_codec.c
+		src/sv2/sv2_crypto_sodium.c
+		src/sv2/sv2_frame.c
+		src/sv2/sv2_msg_common.c
+		src/sv2/sv2_msg_mining.c
+		src/sv2/sv2_noise.c
+	)
+	# the channel layer in src/sv2 includes the gateway's headers from src
+	target_include_directories(datum_gateway PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/sv2 ${CMAKE_CURRENT_SOURCE_DIR}/src ${SECP256K1_INCLUDE_DIRS})
+	target_link_directories(datum_gateway PUBLIC ${SECP256K1_LIBRARY_DIRS})
+	target_link_libraries(datum_gateway PUBLIC ${SECP256K1_LIBRARIES} ${SECP256K1_LDFLAGS} ${SECP256K1_LDFLAGS_OTHER})
+	target_compile_options(datum_gateway PUBLIC ${SECP256K1_CFLAGS} ${SECP256K1_CFLAGS_OTHER})
+elseif(DATUM_SV2_BACKEND STREQUAL "sri")
+	target_sources(datum_gateway PRIVATE
+		src/sv2_sri/datum_sv2_channel_sri.c
+		src/sv2_sri/sv2_backend_sri.c
+	)
+	# src/sv2_sri goes first: its sv2_noise.h and secp256k1.h stand in for
+	# the C core's and libsecp256k1's; the message headers come from src/sv2
+	# and the gateway's from src
+	target_include_directories(datum_gateway PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/src/sv2_sri
+		${CMAKE_CURRENT_SOURCE_DIR}/src/sv2
+		${CMAKE_CURRENT_SOURCE_DIR}/src
+	)
+	pkg_check_modules(SV2_SRI QUIET sv2_sri)
+	if(SV2_SRI_FOUND)
+		message(STATUS "Stratum V2 protocol layer: libsv2_sri ${SV2_SRI_VERSION} from pkg-config")
+		target_include_directories(datum_gateway PRIVATE ${SV2_SRI_INCLUDE_DIRS})
+		target_link_directories(datum_gateway PUBLIC ${SV2_SRI_LIBRARY_DIRS})
+		target_link_libraries(datum_gateway PUBLIC ${SV2_SRI_LIBRARIES} ${SV2_SRI_LDFLAGS} ${SV2_SRI_LDFLAGS_OTHER})
+		target_compile_options(datum_gateway PUBLIC ${SV2_SRI_CFLAGS} ${SV2_SRI_CFLAGS_OTHER})
+	else()
+		find_program(CARGO cargo HINTS $ENV{CARGO_HOME}/bin $ENV{HOME}/.cargo/bin)
+		get_filename_component(CARGO_BIN_DIR "${CARGO}" DIRECTORY)
+		find_program(RUSTC rustc HINTS ${CARGO_BIN_DIR})
+		if(NOT CARGO OR NOT RUSTC)
+			message(FATAL_ERROR
+				"The sri Stratum V2 protocol layer builds external/sri-c-ffi with cargo "
+				"(Rust 1.85 or newer), or links an installed libsv2_sri found by pkg-config "
+				"as sv2_sri. Install Rust, or configure with -DDATUM_SV2_BACKEND=c to build "
+				"the C core instead.")
+		endif()
+		message(STATUS "Stratum V2 protocol layer: external/sri-c-ffi, built with ${CARGO}")
+		set(SV2_SRI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/sri-c-ffi)
+		set(SV2_SRI_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/sri-c-ffi)
+		set(SV2_SRI_LIB ${SV2_SRI_TARGET_DIR}/release/${CMAKE_STATIC_LIBRARY_PREFIX}sv2_sri${CMAKE_STATIC_LIBRARY_SUFFIX})
+		# A static library does not record the system libraries it needs;
+		# rustc prints them for an empty crate, which needs the same ones.
+		file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/sv2_sri_native_libs.rs "")
+		execute_process(
+			COMMAND ${RUSTC} --crate-type staticlib --crate-name sv2_sri_native_libs --print native-static-libs
+				-o ${CMAKE_CURRENT_BINARY_DIR}/libsv2_sri_native_libs.a ${CMAKE_CURRENT_BINARY_DIR}/sv2_sri_native_libs.rs
+			RESULT_VARIABLE RUSTC_RESULT
+			ERROR_VARIABLE RUSTC_OUTPUT
+		)
+		if(NOT RUSTC_RESULT EQUAL 0 OR NOT RUSTC_OUTPUT MATCHES "native-static-libs: ([^\r\n]*)")
+			message(FATAL_ERROR "rustc did not report the system libraries a Rust static library needs:\n${RUSTC_OUTPUT}")
+		endif()
+		separate_arguments(SV2_SRI_NATIVE_LIBS UNIX_COMMAND "${CMAKE_MATCH_1}")
+		list(REMOVE_DUPLICATES SV2_SRI_NATIVE_LIBS)
+		file(GLOB_RECURSE SV2_SRI_SOURCES CONFIGURE_DEPENDS ${SV2_SRI_DIR}/src/*.rs)
+		add_custom_command(
+			OUTPUT ${SV2_SRI_LIB}
+			# cargo runs its own jobs: make's jobserver is not passed to a
+			# USES_TERMINAL command
+			COMMAND ${CMAKE_COMMAND} -E env --unset=MAKEFLAGS --unset=MFLAGS CARGO_TARGET_DIR=${SV2_SRI_TARGET_DIR}
+				${CARGO} build --release --locked --lib --manifest-path ${SV2_SRI_DIR}/Cargo.toml
+			DEPENDS ${SV2_SRI_SOURCES} ${SV2_SRI_DIR}/Cargo.toml ${SV2_SRI_DIR}/Cargo.lock
+			COMMENT "Building the Stratum V2 protocol layer in external/sri-c-ffi with cargo"
+			USES_TERMINAL
+			VERBATIM
+		)
+		add_custom_target(sv2_sri_lib DEPENDS ${SV2_SRI_LIB})
+		add_dependencies(datum_gateway sv2_sri_lib)
+		target_include_directories(datum_gateway PRIVATE ${SV2_SRI_DIR}/include)
+		target_link_libraries(datum_gateway PUBLIC ${SV2_SRI_LIB} ${SV2_SRI_NATIVE_LIBS})
+	endif()
+else()
+	message(FATAL_ERROR "DATUM_SV2_BACKEND must be sri or c, not '${DATUM_SV2_BACKEND}'")
+endif()
+
 if(ENABLE_API)
 	target_sources(datum_gateway PRIVATE src/datum_api.c src/datum_json_api.c)
 	target_include_directories(datum_gateway PRIVATE ${MICROHTTPD_INCLUDE_DIRS})
@@ -163,7 +260,7 @@ endif()
 
 install(FILES README.md CONTRIBUTING.md SECURITY.md LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES doc/DATUM_recommended_setup-network_diagram.svg DESTINATION ${CMAKE_INSTALL_DOCDIR}/doc)
-install(FILES doc/INSTALL.md doc/OPTIMIZATIONS.md doc/usernames.md doc/json_api.md doc/original.md doc/original.txt DESTINATION ${CMAKE_INSTALL_DOCDIR}/doc)
+install(FILES doc/INSTALL.md doc/OPTIMIZATIONS.md doc/STRATUM_V2.md doc/usernames.md doc/json_api.md doc/original.md doc/original.txt DESTINATION ${CMAKE_INSTALL_DOCDIR}/doc)
 
 set(PREGEN_DOC ${CMAKE_SOURCE_DIR}/doc/example_datum_gateway_config.json)
 install(FILES ${PREGEN_DOC} DESTINATION ${CMAKE_INSTALL_DOCDIR})

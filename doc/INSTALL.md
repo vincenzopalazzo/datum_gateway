@@ -16,6 +16,7 @@ Choose an installation method, configure your Bitcoin Core node, then configure 
 - [Solo mining setup (no pool)](#solo-mining-setup-no-pool)
 - [Verify it is working](#verify-it-is-working)
 - [Optimization guide](OPTIMIZATIONS.md): share difficulty, bandwidth, and node peers
+- [Stratum V2](STRATUM_V2.md): building and configuring the Stratum V2 server
 - [Docker](#docker)
 
 ## Requirements
@@ -40,6 +41,11 @@ The following external libraries are required (installed automatically with OCEA
  - libjansson
  - libmicrohttpd
  - libsodium
+
+The Stratum V2 server also needs, depending on its protocol layer ([Stratum V2](STRATUM_V2.md)):
+
+ - Rust (cargo and rustc 1.85 or newer) for the default layer on SRI's crates, or
+ - libsecp256k1 0.4 or newer, with the `ellswift`, `schnorrsig` and `extrakeys` modules, when built with `-DDATUM_SV2_BACKEND=c`
 
 ## Installation
 Install DATUM Gateway using [OCEAN's Debian packages](#oceans-debian-packages), [Debian's official package](#debians-official-package), [build it from source](#building-from-source), or use [Docker](#docker). For a dedicated machine, the [DATUM box installer image](#datum-box-installer-image) installs Debian, Bitcoin Core, and DATUM Gateway together. You also need [Bitcoin Core](https://bitcoincore.org/en/download/), fully synced with the Bitcoin network. OCEAN's repository provides both packages. Full node setup and synchronization instructions are beyond the scope of this document.
@@ -163,6 +169,8 @@ cd datum_gateway
 cmake .
 cmake --build .
 ```
+
+The Stratum V2 server's default protocol layer is built with cargo, so the build also needs Rust 1.85 or newer (from your distribution, or with [rustup](https://rustup.rs)). To build without Rust, pass `-DDATUM_SV2_BACKEND=c` to the first `cmake` command; that needs libsecp256k1 0.4 or newer instead. [Stratum V2](STRATUM_V2.md) has the details.
 
 The executable is `./datum_gateway`. Continue with [Node Configuration](#node-configuration) and [Usage](#usage); the source-build examples below assume you are in this repository directory.
 
