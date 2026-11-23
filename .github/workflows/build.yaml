@@ -38,6 +38,11 @@ jobs:
           - cmake_args: "-DENABLE_API=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_C_FLAGS=-DDATUM_API_FOR_UMBREL=ON"
             extra_cflags: "-DDATUM_API_FOR_UMBREL"
           - cmake_args: "-DENABLE_API=OFF"
+        include:
+          # The Stratum V2 server on its C core instead of SRI's crates
+          - os: debian:latest
+            config:
+              cmake_args: "-DENABLE_API=ON -DCMAKE_C_COMPILER=gcc -DDATUM_SV2_BACKEND=c"
         exclude:
           # Clang configured for C11 rejects our C23 usage
           - os: debian:oldstable
@@ -81,7 +86,7 @@ jobs:
           case "${{ matrix.os }}" in
             debian:*|ubuntu:*)
               INSTALL_CMD="apt update && apt install -y"
-              PACKAGES="git libc6-dev cmake libcurl4-openssl-dev libjansson-dev libsodium-dev pkgconf"
+              PACKAGES="git libc6-dev cmake libcurl4-openssl-dev libjansson-dev libsodium-dev pkgconf curl ca-certificates"
               PACKAGES_API="libmicrohttpd-dev"
               ;;
             almalinux:*|amazonlinux:*|fedora:*|oraclelinux:*)
@@ -96,7 +101,7 @@ jobs:
               ;;
             alpine:*)
               INSTALL_CMD="apk add --no-cache"
-              PACKAGES="git build-base cmake argp-standalone curl-dev jansson-dev libsodium-dev compiler-rt"
+              PACKAGES="git build-base cmake argp-standalone curl-dev jansson-dev libsodium-dev compiler-rt curl"
               PACKAGES_API="libmicrohttpd-dev"
 
               # musl only supports ASan with clang
@@ -104,7 +109,7 @@ jobs:
               ;;
             archlinux:*)
               INSTALL_CMD="pacman -Syu --noconfirm"
-              PACKAGES="git base-devel cmake curl jansson libsodium"
+              PACKAGES="git base-devel cmake curl jansson libsodium rust"
               PACKAGES_API="libmicrohttpd"
               ;;
           esac
@@ -117,10 +122,24 @@ jobs:
           elif [[ "${{ matrix.config.cmake_args }}" =~ CMAKE_C_COMPILER=clang ]]; then
               PACKAGES="$PACKAGES $PACKAGES_CLANG"
           fi
+          # The Stratum V2 server's default protocol layer is built from
+          # external/sri-c-ffi with cargo; the C core needs libsecp256k1 >= 0.4,
+          # newer than most distributions ship (doc/STRATUM_V2.md)
+          if [[ "${{ matrix.config.cmake_args }}" =~ DATUM_SV2_BACKEND=c ]]; then
+              SV2_CMD='git clone --depth 1 -b v0.7.1 https://github.com/bitcoin-core/secp256k1 /tmp/secp256k1
+                cmake -S /tmp/secp256k1 -B /tmp/secp256k1/build -DSECP256K1_ENABLE_MODULE_ELLSWIFT=ON -DSECP256K1_BUILD_TESTS=OFF -DSECP256K1_BUILD_EXHAUSTIVE_TESTS=OFF -DSECP256K1_BUILD_BENCHMARK=OFF
+                cmake --build /tmp/secp256k1/build -j$(nproc)
+                cmake --install /tmp/secp256k1/build
+                ldconfig'
+          else
+              SV2_CMD='command -v cargo > /dev/null || { curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal && . "$HOME/.cargo/env"; }
+                cargo --version'
+          fi
           CMD="set -ex
             ${INIT_CMD}
             ${INSTALL_CMD} ${PACKAGES}
             ${POSTINSTALL_CMD}
+            ${SV2_CMD}
             git config --global --add safe.directory /workspace
             mkdir -p build
             cd build
@@ -161,7 +180,7 @@ jobs:
           release: ${{ contains(matrix.os, ':14.4') && '14.4' || '' }}
           arch: ${{ endsWith(matrix.os, ':aarch64') && 'aarch64' || '' }}
           prepare: |
-            PACKAGES="git cmake pkgconf curl jansson libsodium libmicrohttpd argp-standalone libepoll-shim" 
+            PACKAGES="git cmake pkgconf curl jansson libsodium libmicrohttpd argp-standalone libepoll-shim rust" 
             if echo "${{ matrix.config.cmake_args }}" | grep -q "CMAKE_C_COMPILER=gcc"; then
               PACKAGES="$PACKAGES gcc"
             fi
