@@ -177,6 +177,12 @@ if(DATUM_SV2_BACKEND STREQUAL "c")
 	target_link_directories(datum_gateway PUBLIC ${SECP256K1_LIBRARY_DIRS})
 	target_link_libraries(datum_gateway PUBLIC ${SECP256K1_LIBRARIES} ${SECP256K1_LDFLAGS} ${SECP256K1_LDFLAGS_OTHER})
 	target_compile_options(datum_gateway PUBLIC ${SECP256K1_CFLAGS} ${SECP256K1_CFLAGS_OTHER})
+	set(SV2_PREVIEW
+		"Stratum V2 layer: c, the C core in src/sv2 (no Rust)"
+		"  libsecp256k1:   ${SECP256K1_VERSION}"
+		"  libsodium:      ${SODIUM_VERSION}"
+		"  Switch to SRI's Rust crates with -DDATUM_SV2_BACKEND=sri (needs cargo, Rust 1.85 or newer)"
+	)
 elseif(DATUM_SV2_BACKEND STREQUAL "sri")
 	target_sources(datum_gateway PRIVATE
 		src/sv2_sri/datum_sv2_channel_sri.c
@@ -197,6 +203,10 @@ elseif(DATUM_SV2_BACKEND STREQUAL "sri")
 		target_link_directories(datum_gateway PUBLIC ${SV2_SRI_LIBRARY_DIRS})
 		target_link_libraries(datum_gateway PUBLIC ${SV2_SRI_LIBRARIES} ${SV2_SRI_LDFLAGS} ${SV2_SRI_LDFLAGS_OTHER})
 		target_compile_options(datum_gateway PUBLIC ${SV2_SRI_CFLAGS} ${SV2_SRI_CFLAGS_OTHER})
+		set(SV2_PREVIEW
+			"Stratum V2 layer: sri, SRI's Rust crates through an installed libsv2_sri"
+			"  libsv2_sri:     ${SV2_SRI_VERSION}, found by pkg-config (no Rust is built here)"
+		)
 	else()
 		find_program(CARGO cargo HINTS $ENV{CARGO_HOME}/bin $ENV{HOME}/.cargo/bin)
 		get_filename_component(CARGO_BIN_DIR "${CARGO}" DIRECTORY)
@@ -242,10 +252,63 @@ elseif(DATUM_SV2_BACKEND STREQUAL "sri")
 		add_dependencies(datum_gateway sv2_sri_lib)
 		target_include_directories(datum_gateway PRIVATE ${SV2_SRI_DIR}/include)
 		target_link_libraries(datum_gateway PUBLIC ${SV2_SRI_LIB} ${SV2_SRI_NATIVE_LIBS})
+		execute_process(COMMAND ${CARGO} --version OUTPUT_VARIABLE CARGO_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+		execute_process(COMMAND ${RUSTC} --version OUTPUT_VARIABLE RUSTC_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+		string(REPLACE ";" " " SV2_SRI_NATIVE_LIBS_TEXT "${SV2_SRI_NATIVE_LIBS}")
+		if(DEFINED ENV{RUSTFLAGS})
+			set(SV2_RUSTFLAGS "$ENV{RUSTFLAGS}")
+		else()
+			set(SV2_RUSTFLAGS "(not set)")
+		endif()
+		set(SV2_PREVIEW
+			"Stratum V2 layer: sri, SRI's Rust crates through external/sri-c-ffi, built here with cargo"
+			"  cargo:          ${CARGO_VERSION} (${CARGO})"
+			"  rustc:          ${RUSTC_VERSION}"
+			"  Rust build:     cargo build --release --locked (profile.release in external/sri-c-ffi/Cargo.toml)"
+			"  RUSTFLAGS:      ${SV2_RUSTFLAGS} at configure time (cargo reads it from the build's environment)"
+			"  System libs:    ${SV2_SRI_NATIVE_LIBS_TEXT}"
+			"  Switch to the C core with -DDATUM_SV2_BACKEND=c (no Rust, needs libsecp256k1 0.4 or newer)"
+		)
 	endif()
 else()
 	message(FATAL_ERROR "DATUM_SV2_BACKEND must be sri or c, not '${DATUM_SV2_BACKEND}'")
 endif()
+
+# `make preview` (or `cmake --build <dir> --target preview`) prints what
+# this configuration builds: the Stratum V2 protocol layer, Rust or C, with
+# its toolchain, and the C compiler and flags.  It builds nothing.
+string(TOUPPER "${CMAKE_BUILD_TYPE}" PREVIEW_BUILD_TYPE)
+if(PREVIEW_BUILD_TYPE)
+	set(PREVIEW_BUILD "${CMAKE_BUILD_TYPE}")
+else()
+	set(PREVIEW_BUILD "(none set)")
+endif()
+if(DEFINED CMAKE_C_EXTENSIONS AND NOT CMAKE_C_EXTENSIONS)
+	set(PREVIEW_STD "c${CMAKE_C_STANDARD}")
+else()
+	set(PREVIEW_STD "gnu${CMAKE_C_STANDARD}")
+endif()
+if(NOT CMAKE_C_STANDARD_REQUIRED)
+	string(APPEND PREVIEW_STD ", or an older standard if the compiler lacks it")
+endif()
+string(STRIP "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${PREVIEW_BUILD_TYPE}}" PREVIEW_C_FLAGS)
+if(NOT PREVIEW_C_FLAGS)
+	set(PREVIEW_C_FLAGS "(none)")
+endif()
+set(PREVIEW_LINES
+	"DATUM Gateway ${PROJECT_VERSION} build preview (nothing is built)"
+	"C compiler:       ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION} (${CMAKE_C_COMPILER})"
+	"C standard:       ${PREVIEW_STD}"
+	"Build type:       ${PREVIEW_BUILD}"
+	"C flags:          ${PREVIEW_C_FLAGS}"
+	"JSON API:         ${ENABLE_API}"
+	${SV2_PREVIEW}
+)
+set(PREVIEW_COMMANDS)
+foreach(line IN LISTS PREVIEW_LINES)
+	list(APPEND PREVIEW_COMMANDS COMMAND ${CMAKE_COMMAND} -E echo "${line}")
+endforeach()
+add_custom_target(preview ${PREVIEW_COMMANDS} VERBATIM)
 
 if(ENABLE_API)
 	target_sources(datum_gateway PRIVATE src/datum_api.c src/datum_json_api.c)
