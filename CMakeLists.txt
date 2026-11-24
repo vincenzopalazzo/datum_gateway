@@ -196,6 +196,19 @@ elseif(DATUM_SV2_BACKEND STREQUAL "sri")
 		${CMAKE_CURRENT_SOURCE_DIR}/src/sv2
 		${CMAKE_CURRENT_SOURCE_DIR}/src
 	)
+	# The Rust static library keeps each function in its own section, so the
+	# linker can drop what the gateway never calls: most of the bitcoin crate
+	# and its own copy of libsecp256k1, more than half of the binary
+	include(CheckCSourceCompiles)
+	set(CMAKE_REQUIRED_FLAGS "-Wl,--gc-sections")
+	check_c_source_compiles("int main(void) { return 0; }" DATUM_LINKER_GC_SECTIONS)
+	unset(CMAKE_REQUIRED_FLAGS)
+	if(DATUM_LINKER_GC_SECTIONS)
+		target_link_options(datum_gateway PRIVATE -Wl,--gc-sections)
+		set(SV2_SRI_LINK_TEXT "-Wl,--gc-sections")
+	else()
+		set(SV2_SRI_LINK_TEXT "(none: the linker has no --gc-sections)")
+	endif()
 	pkg_check_modules(SV2_SRI QUIET sv2_sri)
 	if(SV2_SRI_FOUND)
 		message(STATUS "Stratum V2 protocol layer: libsv2_sri ${SV2_SRI_VERSION} from pkg-config")
@@ -206,6 +219,7 @@ elseif(DATUM_SV2_BACKEND STREQUAL "sri")
 		set(SV2_PREVIEW
 			"Stratum V2 layer: sri, SRI's Rust crates through an installed libsv2_sri"
 			"  libsv2_sri:     ${SV2_SRI_VERSION}, found by pkg-config (no Rust is built here)"
+			"  Link options:   ${SV2_SRI_LINK_TEXT}"
 		)
 	else()
 		find_program(CARGO cargo HINTS $ENV{CARGO_HOME}/bin $ENV{HOME}/.cargo/bin)
@@ -237,13 +251,19 @@ elseif(DATUM_SV2_BACKEND STREQUAL "sri")
 		separate_arguments(SV2_SRI_NATIVE_LIBS UNIX_COMMAND "${CMAKE_MATCH_1}")
 		list(REMOVE_DUPLICATES SV2_SRI_NATIVE_LIBS)
 		file(GLOB_RECURSE SV2_SRI_SOURCES CONFIGURE_DEPENDS ${SV2_SRI_DIR}/src/*.rs)
+		# libsecp256k1's small precomputed tables instead of its 1.1 MB ones:
+		# only the Noise handshake uses them, once per connection, and the
+		# small ones make it about 0.2 ms slower
+		set(SV2_SRI_FEATURES "secp256k1/lowmemory,bitcoin/secp-lowmemory")
 		add_custom_command(
 			OUTPUT ${SV2_SRI_LIB}
 			# cargo runs its own jobs: make's jobserver is not passed to a
 			# USES_TERMINAL command
 			COMMAND ${CMAKE_COMMAND} -E env --unset=MAKEFLAGS --unset=MFLAGS CARGO_TARGET_DIR=${SV2_SRI_TARGET_DIR}
-				${CARGO} build --release --locked --lib --manifest-path ${SV2_SRI_DIR}/Cargo.toml
-			DEPENDS ${SV2_SRI_SOURCES} ${SV2_SRI_DIR}/Cargo.toml ${SV2_SRI_DIR}/Cargo.lock
+				${CARGO} build --release --locked --lib --features ${SV2_SRI_FEATURES} --manifest-path ${SV2_SRI_DIR}/Cargo.toml
+			# this file too: make does not run the command again when only its
+			# arguments, such as the features, change
+			DEPENDS ${SV2_SRI_SOURCES} ${SV2_SRI_DIR}/Cargo.toml ${SV2_SRI_DIR}/Cargo.lock ${CMAKE_CURRENT_LIST_FILE}
 			COMMENT "Building the Stratum V2 protocol layer in external/sri-c-ffi with cargo"
 			USES_TERMINAL
 			VERBATIM
@@ -264,9 +284,10 @@ elseif(DATUM_SV2_BACKEND STREQUAL "sri")
 			"Stratum V2 layer: sri, SRI's Rust crates through external/sri-c-ffi, built here with cargo"
 			"  cargo:          ${CARGO_VERSION} (${CARGO})"
 			"  rustc:          ${RUSTC_VERSION}"
-			"  Rust build:     cargo build --release --locked (profile.release in external/sri-c-ffi/Cargo.toml)"
+			"  Rust build:     cargo build --release --locked --features ${SV2_SRI_FEATURES} (profile.release in external/sri-c-ffi/Cargo.toml)"
 			"  RUSTFLAGS:      ${SV2_RUSTFLAGS} at configure time (cargo reads it from the build's environment)"
 			"  System libs:    ${SV2_SRI_NATIVE_LIBS_TEXT}"
+			"  Link options:   ${SV2_SRI_LINK_TEXT}"
 			"  Switch to the C core with -DDATUM_SV2_BACKEND=c (no Rust, needs libsecp256k1 0.4 or newer)"
 		)
 	endif()
