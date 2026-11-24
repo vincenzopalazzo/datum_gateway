@@ -114,6 +114,28 @@ const T_DATUM_CONFIG_ITEM datum_config_options[] = {
 		.required = false, .ptr = &datum_config.stratum_v1_idle_timeout_max_last_work, 	.default_int = 0 },
 	{ .var_type = DATUM_CONF_USERNAME_MODS, .category = "stratum", .name = "username_modifiers", .description = "Modifiers to redirect some portion of shares to alternate usernames", .required = false, .ptr = &datum_config.stratum_username_mod, },
 	
+	// stratum v2 server configs.  Difficulty, idle and fingerprinting policy is shared with the "stratum" (v1) settings.
+	{ .var_type = DATUM_CONF_STRING, 	.category = "stratum_v2", 	.name = "listen_addr",				.description = "IP address to listen for Stratum V2 connections",
+		.required = false, .ptr = datum_config.stratum_v2_listen_addr,				.default_string[0] = "", .max_string_len = sizeof(datum_config.stratum_v2_listen_addr) },
+	{ .var_type = DATUM_CONF_INT, 		.category = "stratum_v2", 	.name = "listen_port",				.description = "Listening port for Stratum V2 (0 disables the Stratum V2 server)",
+		.example_default = true,
+		.required = false, .ptr = &datum_config.stratum_v2_listen_port, 				.default_int = 23335 },
+	{ .var_type = DATUM_CONF_INT, 		.category = "stratum_v2", 	.name = "max_clients_per_thread",	.description = "Maximum clients per Stratum V2 server thread",
+		.required = false, .ptr = &datum_config.stratum_v2_max_clients_per_thread, 		.default_int = 128 },
+	{ .var_type = DATUM_CONF_INT, 		.category = "stratum_v2", 	.name = "max_threads",				.description = "Maximum Stratum V2 server threads",
+		.required = false, .ptr = &datum_config.stratum_v2_max_threads,					.default_int = 4 },
+	{ .var_type = DATUM_CONF_INT, 		.category = "stratum_v2", 	.name = "max_clients",				.description = "Maximum total Stratum V2 clients, connections and open channels together, before refusing more",
+		.required = false, .ptr = &datum_config.stratum_v2_max_clients, 				.default_int = 512 },
+	{ .var_type = DATUM_CONF_INT, 		.category = "stratum_v2", 	.name = "max_channels_per_connection",	.description = "Maximum mining channels one Stratum V2 connection may open (a proxy opens one per miner; every channel counts against max_clients)",
+		.required = false, .ptr = &datum_config.stratum_v2_max_channels_per_connection, 	.default_int = 64 },
+	{ .var_type = DATUM_CONF_STRING, 	.category = "stratum_v2", 	.name = "authority_key_file",		.description = "File holding the Stratum V2 authority secret key (created with a new key if missing). Miners pin the matching public key, printed at startup.",
+		.example_default = true,
+		.required = false, .ptr = datum_config.stratum_v2_authority_key_file,			.default_string[0] = "datum_sv2_authority.key", .max_string_len = sizeof(datum_config.stratum_v2_authority_key_file) },
+	{ .var_type = DATUM_CONF_INT, 		.category = "stratum_v2", 	.name = "certificate_validity_hours",	.description = "How long each Stratum V2 handshake certificate stays valid (renewed automatically at half life)",
+		.required = false, .ptr = &datum_config.stratum_v2_certificate_validity_hours, 	.default_int = 24 },
+	{ .var_type = DATUM_CONF_BOOL, 		.category = "stratum_v2", 	.name = "require_address_usernames",	.description = "Refuse Stratum V2 channels whose username is not a Bitcoin address on this network, optionally followed by .worker (for an endpoint serving other people's miners with datum.pool_pass_full_users)",
+		.required = false, .ptr = &datum_config.stratum_v2_require_address_usernames, 	.default_bool = false },
+	
 	// mining settings
 	{ .var_type = DATUM_CONF_STRING, 	.category = "mining", 		.name = "pool_address",				.description = "Bitcoin address used for mining rewards.",
 		.example = "\"put your own Bitcoin invoice address here\"",
@@ -542,6 +564,41 @@ int datum_read_config(const char *conffile) {
 		hash2hex(token, datum_config.api_csrf_token);
 	}
 #endif
+	
+	if (datum_config.stratum_v2_max_threads > MAX_THREADS) {
+		DLOG_ERROR("stratum_v2.max_threads (%d) exceeds compiled maximum (%d)", datum_config.stratum_v2_max_threads, MAX_THREADS);
+		return 0;
+	}
+	if (datum_config.stratum_v2_max_clients_per_thread > MAX_CLIENTS_THREAD) {
+		DLOG_ERROR("stratum_v2.max_clients_per_thread (%d) exceeds compiled maximum (%d)", datum_config.stratum_v2_max_clients_per_thread, MAX_CLIENTS_THREAD);
+		return 0;
+	}
+	if (datum_config.stratum_v2_max_threads < 1 || datum_config.stratum_v2_max_clients_per_thread < 1) {
+		DLOG_ERROR("stratum_v2.max_threads and stratum_v2.max_clients_per_thread must be at least 1");
+		return 0;
+	}
+	// the channel's slot is 10 bits of its session id (datum_sv2_session_id())
+	if (datum_config.stratum_v2_max_channels_per_connection < 1 || datum_config.stratum_v2_max_channels_per_connection > 1024) {
+		DLOG_ERROR("stratum_v2.max_channels_per_connection must be between 1 and 1024");
+		return 0;
+	}
+	if (datum_config.stratum_v2_max_clients > (datum_config.stratum_v2_max_clients_per_thread * datum_config.stratum_v2_max_threads)) {
+		DLOG_WARN("stratum_v2.max_clients (%d) exceeds max_clients_per_thread * max_threads (%d); lowering", datum_config.stratum_v2_max_clients, datum_config.stratum_v2_max_clients_per_thread * datum_config.stratum_v2_max_threads);
+		datum_config.stratum_v2_max_clients = datum_config.stratum_v2_max_clients_per_thread * datum_config.stratum_v2_max_threads;
+	}
+	if (datum_config.stratum_v2_certificate_validity_hours < 1) {
+		DLOG_WARN("stratum_v2.certificate_validity_hours must be at least 1; using 1");
+		datum_config.stratum_v2_certificate_validity_hours = 1;
+	}
+	// the validity is counted in seconds in 32 bits; a year is plenty
+	if (datum_config.stratum_v2_certificate_validity_hours > 8760) {
+		DLOG_WARN("stratum_v2.certificate_validity_hours must be at most 8760 (a year); using 8760");
+		datum_config.stratum_v2_certificate_validity_hours = 8760;
+	}
+	if (datum_config.stratum_v2_listen_port && datum_config.stratum_v2_listen_port == datum_config.stratum_v1_listen_port) {
+		DLOG_ERROR("stratum_v2.listen_port must differ from stratum.listen_port");
+		return 0;
+	}
 	
 	if (datum_config.stratum_v1_max_threads > MAX_THREADS) {
 		DLOG_FATAL("Maximum threads must be less than %d.", MAX_THREADS);

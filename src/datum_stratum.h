@@ -273,6 +273,11 @@ void stratum_job_merkle_root_calc(T_DATUM_STRATUM_JOB *s, unsigned char *coinbas
 int assembleBlockAndSubmit(uint8_t *block_header, uint8_t *coinbase_txn, size_t coinbase_txn_size, T_DATUM_STRATUM_JOB *job, T_DATUM_STRATUM_THREADPOOL_DATA *sdata, const char *block_hash_hex, bool empty_work);
 void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_only);
 int send_mining_set_difficulty(T_DATUM_CLIENT_DATA *c);
+void stratum_update_miner_stats_accepted(T_DATUM_MINER_DATA *m, uint64_t diff_accepted);
+void datum_stratum_fingerprint_by_UA(T_DATUM_MINER_DATA *m);
+bool stratum_job_coinbaser_ready(T_DATUM_STRATUM_THREADPOOL_DATA *sdata, T_DATUM_STRATUM_JOB *job);
+void stratum_latest_empty_increment_complete(uint64_t index, int clients_notified);
+int datum_sv2_active_threads(void);
 bool stratum_latest_empty_check_ready_for_full(void);
 
 // Server thread main loop

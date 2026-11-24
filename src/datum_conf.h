@@ -124,6 +124,16 @@ typedef struct {
 	
 	void *stratum_username_mod;
 	
+	char stratum_v2_listen_addr[128];
+	int stratum_v2_listen_port;
+	int stratum_v2_max_clients;
+	int stratum_v2_max_threads;
+	int stratum_v2_max_clients_per_thread;
+	int stratum_v2_max_channels_per_connection;
+	char stratum_v2_authority_key_file[1024];
+	int stratum_v2_certificate_validity_hours;
+	bool stratum_v2_require_address_usernames;
+	
 	char mining_pool_address[256];
 	char mining_coinbase_tag_primary[64];
 	char mining_coinbase_tag_secondary[64];

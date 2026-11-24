@@ -14,6 +14,8 @@ else()
 endif()
 
 option(ENABLE_API "Build API support." ON)
+set(DATUM_SV2_BACKEND "sri" CACHE STRING "Stratum V2 protocol layer: sri (SRI's crates through external/sri-c-ffi, needs cargo) or c (the C core in src/sv2, needs libsecp256k1 >= 0.4)")
+set_property(CACHE DATUM_SV2_BACKEND PROPERTY STRINGS sri c)
 
 include(GNUInstallDirs)
 
@@ -33,6 +35,8 @@ add_executable(datum_gateway
 	src/datum_stratum_tests.c
 	src/datum_stratum_dupes_tests.c
 	src/datum_submitblock.c
+	src/datum_sv2.c
+	src/datum_sv2_tests.c
 	src/datum_utils.c
 	src/datum_utils_tests.c
 	src/thirdparty_base58.c
@@ -150,6 +154,183 @@ target_compile_options(datum_gateway
 	${SODIUM_CFLAGS} ${SODIUM_CFLAGS_OTHER}
 )
 
+# Stratum V2: src/datum_sv2.c runs on one of two protocol layers, picked
+# with -DDATUM_SV2_BACKEND (see doc/STRATUM_V2.md).
+#   sri  SRI's Rust crates behind the C API in external/sri-c-ffi, which
+#        cargo builds here, or an installed libsv2_sri that pkg-config
+#        finds as sv2_sri.
+#   c    the C core in src/sv2, on libsodium and libsecp256k1 >= 0.4
+#        (ElligatorSwift arrived in 0.4.0).
+if(DATUM_SV2_BACKEND STREQUAL "c")
+	pkg_check_modules(SECP256K1 REQUIRED libsecp256k1>=0.4.0)
+	target_sources(datum_gateway PRIVATE
+		src/sv2/datum_sv2_channel.c
+		src/sv2/sv2_codec.c
+		src/sv2/sv2_crypto_sodium.c
+		src/sv2/sv2_frame.c
+		src/sv2/sv2_msg_common.c
+		src/sv2/sv2_msg_mining.c
+		src/sv2/sv2_noise.c
+	)
+	# the channel layer in src/sv2 includes the gateway's headers from src
+	target_include_directories(datum_gateway PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/sv2 ${CMAKE_CURRENT_SOURCE_DIR}/src ${SECP256K1_INCLUDE_DIRS})
+	target_link_directories(datum_gateway PUBLIC ${SECP256K1_LIBRARY_DIRS})
+	target_link_libraries(datum_gateway PUBLIC ${SECP256K1_LIBRARIES} ${SECP256K1_LDFLAGS} ${SECP256K1_LDFLAGS_OTHER})
+	target_compile_options(datum_gateway PUBLIC ${SECP256K1_CFLAGS} ${SECP256K1_CFLAGS_OTHER})
+	set(SV2_PREVIEW
+		"Stratum V2 layer: c, the C core in src/sv2 (no Rust)"
+		"  libsecp256k1:   ${SECP256K1_VERSION}"
+		"  libsodium:      ${SODIUM_VERSION}"
+		"  Switch to SRI's Rust crates with -DDATUM_SV2_BACKEND=sri (needs cargo, Rust 1.85 or newer)"
+	)
+elseif(DATUM_SV2_BACKEND STREQUAL "sri")
+	target_sources(datum_gateway PRIVATE
+		src/sv2_sri/datum_sv2_channel_sri.c
+		src/sv2_sri/sv2_backend_sri.c
+	)
+	# src/sv2_sri goes first: its sv2_noise.h and secp256k1.h stand in for
+	# the C core's and libsecp256k1's; the message headers come from src/sv2
+	# and the gateway's from src
+	target_include_directories(datum_gateway PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/src/sv2_sri
+		${CMAKE_CURRENT_SOURCE_DIR}/src/sv2
+		${CMAKE_CURRENT_SOURCE_DIR}/src
+	)
+	# The Rust static library keeps each function in its own section, so the
+	# linker can drop what the gateway never calls: most of the bitcoin crate
+	# and its own copy of libsecp256k1, more than half of the binary
+	include(CheckCSourceCompiles)
+	set(CMAKE_REQUIRED_FLAGS "-Wl,--gc-sections")
+	check_c_source_compiles("int main(void) { return 0; }" DATUM_LINKER_GC_SECTIONS)
+	unset(CMAKE_REQUIRED_FLAGS)
+	if(DATUM_LINKER_GC_SECTIONS)
+		target_link_options(datum_gateway PRIVATE -Wl,--gc-sections)
+		set(SV2_SRI_LINK_TEXT "-Wl,--gc-sections")
+	else()
+		set(SV2_SRI_LINK_TEXT "(none: the linker has no --gc-sections)")
+	endif()
+	pkg_check_modules(SV2_SRI QUIET sv2_sri)
+	if(SV2_SRI_FOUND)
+		message(STATUS "Stratum V2 protocol layer: libsv2_sri ${SV2_SRI_VERSION} from pkg-config")
+		target_include_directories(datum_gateway PRIVATE ${SV2_SRI_INCLUDE_DIRS})
+		target_link_directories(datum_gateway PUBLIC ${SV2_SRI_LIBRARY_DIRS})
+		target_link_libraries(datum_gateway PUBLIC ${SV2_SRI_LIBRARIES} ${SV2_SRI_LDFLAGS} ${SV2_SRI_LDFLAGS_OTHER})
+		target_compile_options(datum_gateway PUBLIC ${SV2_SRI_CFLAGS} ${SV2_SRI_CFLAGS_OTHER})
+		set(SV2_PREVIEW
+			"Stratum V2 layer: sri, SRI's Rust crates through an installed libsv2_sri"
+			"  libsv2_sri:     ${SV2_SRI_VERSION}, found by pkg-config (no Rust is built here)"
+			"  Link options:   ${SV2_SRI_LINK_TEXT}"
+		)
+	else()
+		find_program(CARGO cargo HINTS $ENV{CARGO_HOME}/bin $ENV{HOME}/.cargo/bin)
+		get_filename_component(CARGO_BIN_DIR "${CARGO}" DIRECTORY)
+		find_program(RUSTC rustc HINTS ${CARGO_BIN_DIR})
+		if(NOT CARGO OR NOT RUSTC)
+			message(FATAL_ERROR
+				"The sri Stratum V2 protocol layer builds external/sri-c-ffi with cargo "
+				"(Rust 1.85 or newer), or links an installed libsv2_sri found by pkg-config "
+				"as sv2_sri. Install Rust, or configure with -DDATUM_SV2_BACKEND=c to build "
+				"the C core instead.")
+		endif()
+		message(STATUS "Stratum V2 protocol layer: external/sri-c-ffi, built with ${CARGO}")
+		set(SV2_SRI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/sri-c-ffi)
+		set(SV2_SRI_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/sri-c-ffi)
+		set(SV2_SRI_LIB ${SV2_SRI_TARGET_DIR}/release/${CMAKE_STATIC_LIBRARY_PREFIX}sv2_sri${CMAKE_STATIC_LIBRARY_SUFFIX})
+		# A static library does not record the system libraries it needs;
+		# rustc prints them for an empty crate, which needs the same ones.
+		file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/sv2_sri_native_libs.rs "")
+		execute_process(
+			COMMAND ${RUSTC} --crate-type staticlib --crate-name sv2_sri_native_libs --print native-static-libs
+				-o ${CMAKE_CURRENT_BINARY_DIR}/libsv2_sri_native_libs.a ${CMAKE_CURRENT_BINARY_DIR}/sv2_sri_native_libs.rs
+			RESULT_VARIABLE RUSTC_RESULT
+			ERROR_VARIABLE RUSTC_OUTPUT
+		)
+		if(NOT RUSTC_RESULT EQUAL 0 OR NOT RUSTC_OUTPUT MATCHES "native-static-libs: ([^\r\n]*)")
+			message(FATAL_ERROR "rustc did not report the system libraries a Rust static library needs:\n${RUSTC_OUTPUT}")
+		endif()
+		separate_arguments(SV2_SRI_NATIVE_LIBS UNIX_COMMAND "${CMAKE_MATCH_1}")
+		list(REMOVE_DUPLICATES SV2_SRI_NATIVE_LIBS)
+		file(GLOB_RECURSE SV2_SRI_SOURCES CONFIGURE_DEPENDS ${SV2_SRI_DIR}/src/*.rs)
+		# libsecp256k1's small precomputed tables instead of its 1.1 MB ones:
+		# only the Noise handshake uses them, once per connection, and the
+		# small ones make it about 0.2 ms slower
+		set(SV2_SRI_FEATURES "secp256k1/lowmemory,bitcoin/secp-lowmemory")
+		add_custom_command(
+			OUTPUT ${SV2_SRI_LIB}
+			# cargo runs its own jobs: make's jobserver is not passed to a
+			# USES_TERMINAL command
+			COMMAND ${CMAKE_COMMAND} -E env --unset=MAKEFLAGS --unset=MFLAGS CARGO_TARGET_DIR=${SV2_SRI_TARGET_DIR}
+				${CARGO} build --release --locked --lib --features ${SV2_SRI_FEATURES} --manifest-path ${SV2_SRI_DIR}/Cargo.toml
+			# this file too: make does not run the command again when only its
+			# arguments, such as the features, change
+			DEPENDS ${SV2_SRI_SOURCES} ${SV2_SRI_DIR}/Cargo.toml ${SV2_SRI_DIR}/Cargo.lock ${CMAKE_CURRENT_LIST_FILE}
+			COMMENT "Building the Stratum V2 protocol layer in external/sri-c-ffi with cargo"
+			USES_TERMINAL
+			VERBATIM
+		)
+		add_custom_target(sv2_sri_lib DEPENDS ${SV2_SRI_LIB})
+		add_dependencies(datum_gateway sv2_sri_lib)
+		target_include_directories(datum_gateway PRIVATE ${SV2_SRI_DIR}/include)
+		target_link_libraries(datum_gateway PUBLIC ${SV2_SRI_LIB} ${SV2_SRI_NATIVE_LIBS})
+		execute_process(COMMAND ${CARGO} --version OUTPUT_VARIABLE CARGO_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+		execute_process(COMMAND ${RUSTC} --version OUTPUT_VARIABLE RUSTC_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+		string(REPLACE ";" " " SV2_SRI_NATIVE_LIBS_TEXT "${SV2_SRI_NATIVE_LIBS}")
+		if(DEFINED ENV{RUSTFLAGS})
+			set(SV2_RUSTFLAGS "$ENV{RUSTFLAGS}")
+		else()
+			set(SV2_RUSTFLAGS "(not set)")
+		endif()
+		set(SV2_PREVIEW
+			"Stratum V2 layer: sri, SRI's Rust crates through external/sri-c-ffi, built here with cargo"
+			"  cargo:          ${CARGO_VERSION} (${CARGO})"
+			"  rustc:          ${RUSTC_VERSION}"
+			"  Rust build:     cargo build --release --locked --features ${SV2_SRI_FEATURES} (profile.release in external/sri-c-ffi/Cargo.toml)"
+			"  RUSTFLAGS:      ${SV2_RUSTFLAGS} at configure time (cargo reads it from the build's environment)"
+			"  System libs:    ${SV2_SRI_NATIVE_LIBS_TEXT}"
+			"  Link options:   ${SV2_SRI_LINK_TEXT}"
+			"  Switch to the C core with -DDATUM_SV2_BACKEND=c (no Rust, needs libsecp256k1 0.4 or newer)"
+		)
+	endif()
+else()
+	message(FATAL_ERROR "DATUM_SV2_BACKEND must be sri or c, not '${DATUM_SV2_BACKEND}'")
+endif()
+
+# `make preview` (or `cmake --build <dir> --target preview`) prints what
+# this configuration builds: the Stratum V2 protocol layer, Rust or C, with
+# its toolchain, and the C compiler and flags.  It builds nothing.
+string(TOUPPER "${CMAKE_BUILD_TYPE}" PREVIEW_BUILD_TYPE)
+if(PREVIEW_BUILD_TYPE)
+	set(PREVIEW_BUILD "${CMAKE_BUILD_TYPE}")
+else()
+	set(PREVIEW_BUILD "(none set)")
+endif()
+if(DEFINED CMAKE_C_EXTENSIONS AND NOT CMAKE_C_EXTENSIONS)
+	set(PREVIEW_STD "c${CMAKE_C_STANDARD}")
+else()
+	set(PREVIEW_STD "gnu${CMAKE_C_STANDARD}")
+endif()
+if(NOT CMAKE_C_STANDARD_REQUIRED)
+	string(APPEND PREVIEW_STD ", or an older standard if the compiler lacks it")
+endif()
+string(STRIP "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${PREVIEW_BUILD_TYPE}}" PREVIEW_C_FLAGS)
+if(NOT PREVIEW_C_FLAGS)
+	set(PREVIEW_C_FLAGS "(none)")
+endif()
+set(PREVIEW_LINES
+	"DATUM Gateway ${PROJECT_VERSION} build preview (nothing is built)"
+	"C compiler:       ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION} (${CMAKE_C_COMPILER})"
+	"C standard:       ${PREVIEW_STD}"
+	"Build type:       ${PREVIEW_BUILD}"
+	"C flags:          ${PREVIEW_C_FLAGS}"
+	"JSON API:         ${ENABLE_API}"
+	${SV2_PREVIEW}
+)
+set(PREVIEW_COMMANDS)
+foreach(line IN LISTS PREVIEW_LINES)
+	list(APPEND PREVIEW_COMMANDS COMMAND ${CMAKE_COMMAND} -E echo "${line}")
+endforeach()
+add_custom_target(preview ${PREVIEW_COMMANDS} VERBATIM)
+
 if(ENABLE_API)
 	target_sources(datum_gateway PRIVATE src/datum_api.c src/datum_json_api.c)
 	target_include_directories(datum_gateway PRIVATE ${MICROHTTPD_INCLUDE_DIRS})
@@ -163,7 +344,7 @@ endif()
 
 install(FILES README.md CONTRIBUTING.md SECURITY.md LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES doc/DATUM_recommended_setup-network_diagram.svg DESTINATION ${CMAKE_INSTALL_DOCDIR}/doc)
-install(FILES doc/INSTALL.md doc/OPTIMIZATIONS.md doc/usernames.md doc/json_api.md doc/original.md doc/original.txt DESTINATION ${CMAKE_INSTALL_DOCDIR}/doc)
+install(FILES doc/INSTALL.md doc/OPTIMIZATIONS.md doc/STRATUM_V2.md doc/usernames.md doc/json_api.md doc/original.md doc/original.txt DESTINATION ${CMAKE_INSTALL_DOCDIR}/doc)
 
 set(PREGEN_DOC ${CMAKE_SOURCE_DIR}/doc/example_datum_gateway_config.json)
 install(FILES ${PREGEN_DOC} DESTINATION ${CMAKE_INSTALL_DOCDIR})
