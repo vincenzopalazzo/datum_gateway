@@ -55,10 +55,13 @@ standard and flags:
 Both layers produce the same bytes for every message and accept each
 other's handshakes. The SRI layer checks shares with `channels_sv2`'s own
 rules, which differ from the C core's in a few details, such as the error
-code a refused share gets. The SRI layer makes the binary larger
-(about 2.2 MB stripped against 0.5 MB, mostly libsecp256k1's precomputed
-tables, which the C core loads as a shared library instead). `external/README.md`
-says why the SRI C API lives in this repository for now.
+code a refused share gets. The SRI layer makes the binary larger: on
+x86_64, about 1.5 MB stripped against 0.4 MB, for the Rust standard
+library, SRI's crates and libsecp256k1, which the C core loads as a shared
+library instead. The build links with `--gc-sections` and builds
+libsecp256k1 with its small precomputed tables; without them the binary is
+5.7 MB. `external/README.md` says why the SRI C API lives in this
+repository for now.
 
 ## Configuration
 
